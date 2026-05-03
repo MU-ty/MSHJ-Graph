@@ -508,22 +508,78 @@ p {
   background-size: 28px 28px;
   border: 1px dashed #cad6ea;
   border-radius: 22px;
-  min-height: 620px;
+  min-height: 500px;
+  height: 80vh;
   overflow: hidden;
   padding: 12px;
+  user-select: none;
+}
+
+.graph-toolbar {
+  margin-bottom: 10px;
+  position: relative;
+}
+
+.graph-search {
+  background: #fbfdff;
+  border: 1px solid #d9e1ef;
+  border-radius: 14px;
+  color: #172033;
+  font: inherit;
+  font-size: 14px;
+  padding: 10px 14px;
+  width: 100%;
+}
+
+.graph-search:focus {
+  border-color: #2f6df6;
+  box-shadow: 0 0 0 3px rgba(47, 109, 246, 0.15);
+  outline: none;
+}
+
+.graph-search-results {
+  background: white;
+  border: 1px solid #e3e9f5;
+  border-radius: 14px;
+  box-shadow: 0 12px 28px rgba(31, 45, 81, 0.15);
+  left: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 6px;
+  position: absolute;
+  top: 100%;
+  width: 100%;
+  z-index: 10;
+}
+
+.graph-search-item {
+  background: transparent;
+  border-radius: 10px;
+  color: #172033;
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.graph-search-item:hover {
+  background: #f3f6fb;
 }
 
 .knowledge-graph {
   display: block;
-  height: 590px;
   width: 100%;
+  height: 100%;
 }
 
 .knowledge-graph marker path {
   fill: #a7b4ca;
 }
 
-.graph-edge line {
+.graph-edge path {
   stroke: #a7b4ca;
   stroke-dasharray: 0;
   stroke-linecap: round;
@@ -541,25 +597,25 @@ p {
   stroke-width: 5px;
 }
 
-.graph-edge.required line {
+.graph-edge.required path {
   stroke: #16a34a;
   stroke-width: 2.3;
 }
 
-.graph-edge.bonus line {
+.graph-edge.bonus path {
   stroke: #7c3aed;
   stroke-dasharray: 8 6;
 }
 
-.graph-edge.belongs_to line {
+.graph-edge.belongs_to path {
   stroke: #2f6df6;
 }
 
-.graph-edge.applies_to line {
+.graph-edge.applies_to path {
   stroke: #f59e0b;
 }
 
-.graph-edge.active line {
+.graph-edge.active path {
   stroke: #ef4444;
   stroke-width: 3.3;
 }
@@ -578,8 +634,8 @@ p {
 
 .kg-node text {
   fill: white;
-  font-size: 11px;
-  font-weight: 900;
+  font-size: 10px;
+  font-weight: 800;
   pointer-events: none;
   text-anchor: middle;
 }
@@ -611,7 +667,7 @@ p {
 }
 
 .kg-node.selected text {
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .graph-legend {
@@ -749,6 +805,57 @@ textarea {
   line-height: 1.6;
   min-height: 230px;
   resize: vertical;
+}
+
+.upload-zone {
+  align-items: center;
+  border: 2px dashed #c8d5ea;
+  border-radius: 16px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 14px;
+  min-height: 100px;
+  padding: 20px;
+  text-align: center;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.upload-zone:hover {
+  background: #f0f5ff;
+  border-color: #2f6df6;
+}
+
+.upload-zone.dragover {
+  background: #e8efff;
+  border-color: #2f6df6;
+}
+
+.upload-zone.has-file {
+  background: #e8f8ef;
+  border-color: #16a34a;
+  border-style: solid;
+}
+
+.upload-zone-icon {
+  color: #8a9bbd;
+}
+
+.upload-zone-text {
+  color: #6a7488;
+  font-size: 14px;
+}
+
+.upload-zone-name {
+  color: #16a34a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.upload-zone input[type="file"] {
+  display: none;
 }
 
 .button-row {
@@ -889,6 +996,80 @@ textarea {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+.cluster-view {
+  display: grid;
+  gap: 16px;
+}
+
+.cluster-canvas {
+  background:
+    radial-gradient(circle at center, rgba(47, 109, 246, 0.04), transparent 60%);
+  border: 1px dashed #cad6ea;
+  border-radius: 18px;
+  display: block;
+  min-height: 400px;
+  width: 100%;
+}
+
+.cluster-node {
+  cursor: pointer;
+}
+
+.cluster-node:hover circle {
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.2));
+  r: 0.45;
+}
+
+.cluster-info {
+  display: grid;
+  gap: 10px;
+}
+
+.cluster-card {
+  background: #f7f9fd;
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.cluster-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.eval-list {
+  display: grid;
+  gap: 8px;
+}
+
+.eval-row {
+  align-items: center;
+  background: #f7f9fd;
+  border-radius: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.eval-row b {
+  min-width: 160px;
+}
+
+.eval-pass {
+  color: #16a34a;
+}
+
+.eval-warn {
+  color: #f59e0b;
+}
+
+.eval-fail {
+  color: #dc2626;
 }
 
 @media (max-width: 1100px) {

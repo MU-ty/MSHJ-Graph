@@ -4,3 +4,7 @@ pydantic
 networkx
 pytest
 httpx
+openai
+python-dotenv
+PyPDF2
+python-multipart

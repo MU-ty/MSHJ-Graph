@@ -5,6 +5,7 @@ import {
   BarChart3,
   BrainCircuit,
   CheckCircle2,
+  ClipboardCheck,
   Database,
   FileSearch,
   GitBranch,
@@ -16,7 +17,8 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
-  TrendingUp
+  TrendingUp,
+  XCircle
 } from 'lucide-react';
 import './styles.css';
 
@@ -98,13 +100,102 @@ type MatchResult = {
   parsed_resume: ParsedResume;
 };
 
-type ModuleKey = 'overview' | 'graph' | 'evolution' | 'matching';
+type ExtractionDetail = {
+  case_id: string;
+  type: string;
+  precision: number;
+  recall: number;
+  f1: number;
+  tp: number;
+  fp: number;
+  fn: number;
+  expected: string[];
+  predicted: string[];
+  missing: string[];
+  extra: string[];
+};
+
+type MatchDetail = {
+  case_id: string;
+  job_id: string;
+  score: number;
+  expected_min_score: number;
+  passed: boolean;
+  covered_required: string[];
+  missing_required: string[];
+  diagnosis: string;
+};
+
+type DiscoveryDetail = {
+  job_id: string;
+  title: string;
+  confidence: number;
+  signal_count: number;
+  skills_count: number;
+};
+
+type EvaluationData = {
+  summary: {
+    skill_extraction_f1: number;
+    skill_extraction_precision: number;
+    skill_extraction_recall: number;
+    matching_accuracy: number;
+    matching_passed: string;
+    discovery_count: number;
+    high_confidence_discoveries: number;
+  };
+  skill_extraction: {
+    metric: string;
+    total_cases: number;
+    macro_avg: { precision: number; recall: number; f1: number };
+    micro_avg: { precision: number; recall: number; f1: number };
+    details: ExtractionDetail[];
+  };
+  matching: {
+    metric: string;
+    total_cases: number;
+    passed: number;
+    failed: number;
+    accuracy: number;
+    details: MatchDetail[];
+  };
+  discovery: {
+    metric: string;
+    total_discoveries: number;
+    high_confidence_count: number;
+    discoveries: DiscoveryDetail[];
+  };
+};
+
+type ClusterJob = {
+  id: string;
+  title: string;
+  category: string;
+  coords: { x: number; y: number };
+};
+
+type Cluster = {
+  id: number;
+  jobs: ClusterJob[];
+  center: { x: number; y: number };
+  top_skills: Array<{ name: string; count: number }>;
+};
+
+type ClusteringData = {
+  n_clusters: number;
+  n_jobs: number;
+  clusters: Cluster[];
+  similarity_edges: Array<{ source: string; target: string; similarity: number }>;
+};
+
+type ModuleKey = 'overview' | 'graph' | 'evolution' | 'matching' | 'evaluation';
 
 const modules: Array<{ key: ModuleKey; label: string; icon: React.ReactNode }> = [
   { key: 'overview', label: '态势总览', icon: <BarChart3 size={18} /> },
   { key: 'graph', label: '图谱探索', icon: <Network size={18} /> },
   { key: 'evolution', label: '动态演化', icon: <TrendingUp size={18} /> },
-  { key: 'matching', label: '人岗诊断', icon: <Target size={18} /> }
+  { key: 'matching', label: '人岗诊断', icon: <Target size={18} /> },
+  { key: 'evaluation', label: '系统评测', icon: <ClipboardCheck size={18} /> }
 ];
 
 function Pill({ children, tone = 'blue' }: { children: React.ReactNode; tone?: 'blue' | 'green' | 'orange' | 'gray' | 'red' | 'purple' }) {
@@ -144,6 +235,239 @@ function EmptyState({ text }: { text: string }) {
   return <div className="empty">{text}</div>;
 }
 
+function useGraphLayout(graph: GraphData | null, graphFilter: string) {
+  const filteredNodes = React.useMemo(() => {
+    if (!graph) return [];
+    return graphFilter === 'all' ? graph.nodes : graph.nodes.filter((n) => n.type === graphFilter);
+  }, [graph?.nodes, graphFilter]);
+
+  return React.useMemo(() => {
+    if (!graph) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[], positions: {} as Record<string, { x: number; y: number }> };
+
+    const ids = new Set(filteredNodes.map((n) => n.id));
+    graph.edges.forEach((e) => {
+      if (ids.has(e.source) || ids.has(e.target)) {
+        ids.add(e.source);
+        ids.add(e.target);
+      }
+    });
+
+    const nodes = graph.nodes.filter((n) => ids.has(n.id));
+    const edges = graph.edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+
+    const W = 1200;
+    const columnX: Record<string, number> = { job: 140, skill: 460, skill_category: 780, scenario: 1040 };
+    const grouped: Record<string, GraphNode[]> = {};
+    for (const n of nodes) {
+      (grouped[n.type] ??= []).push(n);
+    }
+
+    const maxCol = Math.max(...Object.values(grouped).map(g => g.length), 1);
+    const H = Math.max(800, maxCol * 54 + 80);
+
+    const positions: Record<string, { x: number; y: number }> = {};
+    for (const [type, group] of Object.entries(grouped)) {
+      const x = columnX[type] ?? W / 2;
+      const gap = (H - 60) / Math.max(group.length, 1);
+      const startY = 30 + gap / 2;
+      group.forEach((n, i) => {
+        positions[n.id] = { x, y: startY + i * gap };
+      });
+    }
+
+    return { nodes, edges, positions };
+  }, [filteredNodes, graph]);
+}
+
+function GraphCanvas({
+  nodes,
+  edges,
+  positions,
+  selectedNodeId,
+  onSelectNode,
+}: {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  positions: Record<string, { x: number; y: number }>;
+  selectedNodeId: string | null;
+  onSelectNode: (id: string) => void;
+}) {
+  const W = 1200;
+  const maxCol = nodes.length > 0 ? Math.max(...['job','skill','skill_category','scenario'].map(t => nodes.filter(n => n.type === t).length)) : 1;
+  const H = Math.max(800, maxCol * 54 + 80);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [viewBox, setViewBox] = React.useState({ x: -40, y: -40, w: W + 80, h: H + 80 });
+
+  React.useEffect(() => {
+    setViewBox({ x: -40, y: -40, w: W + 80, h: H + 80 });
+  }, [W, H]);
+  const [search, setSearch] = React.useState('');
+
+  const edgeSet = React.useMemo(() => {
+    const s = new Set<string>();
+    edges.forEach((e) => s.add(`${e.source}->${e.target}`));
+    return s;
+  }, [edges]);
+
+  const relatedEdgeKeys = React.useMemo(() => {
+    if (!selectedNodeId) return new Set<string>();
+    return new Set(edges.filter((e) => e.source === selectedNodeId || e.target === selectedNodeId).map((e) => `${e.source}->${e.target}`));
+  }, [edges, selectedNodeId]);
+
+  const searchLower = search.toLowerCase();
+  const searchMatchIds = React.useMemo(() => {
+    if (!searchLower) return new Set<string>();
+    return new Set(nodes.filter((n) => n.label.toLowerCase().includes(searchLower)).map((n) => n.id));
+  }, [nodes, searchLower]);
+
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1.1 : 0.91;
+      setViewBox((vb) => {
+        const newW = Math.max(300, Math.min(W * 2.5, vb.w * factor));
+        const newH = Math.max(200, Math.min(H * 2.5, vb.h * factor));
+        const rect = el.getBoundingClientRect();
+        const mx = ((e.clientX - rect.left) / rect.width) * vb.w + vb.x;
+        const my = ((e.clientY - rect.top) / rect.height) * vb.h + vb.y;
+        return { x: mx - (mx - vb.x) * (newW / vb.w), y: my - (my - vb.y) * (newH / vb.h), w: newW, h: newH };
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let panning = false;
+    let startX = 0, startY = 0, startVx = 0, startVy = 0;
+    const onMouseDown = (e: MouseEvent) => {
+      if ((e.target as Element).closest('.kg-node')) return;
+      panning = true;
+      startX = e.clientX; startY = e.clientY;
+      const vb = viewBoxRef.current;
+      startVx = vb.x; startVy = vb.y;
+    };
+    const onMouseMove = (e: MouseEvent) => {
+      if (!panning) return;
+      const rect = el.getBoundingClientRect();
+      const vb = viewBoxRef.current;
+      const scaleX = vb.w / rect.width;
+      const scaleY = vb.h / rect.height;
+      setViewBox({ ...vb, x: startVx - (e.clientX - startX) * scaleX, y: startVy - (e.clientY - startY) * scaleY });
+    };
+    const onMouseUp = () => { panning = false; };
+    el.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => { el.removeEventListener('mousedown', onMouseDown); window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); };
+  }, []);
+
+  const viewBoxRef = React.useRef(viewBox);
+  viewBoxRef.current = viewBox;
+
+  const centerOn = (x: number, y: number) => {
+    setViewBox({ x: x - 400, y: y - 300, w: 800, h: 600 });
+  };
+
+  const handleSearchSelect = (nodeId: string) => {
+    onSelectNode(nodeId);
+    const pos = positions[nodeId];
+    if (pos) centerOn(pos.x, pos.y);
+  };
+
+  return (
+    <div>
+      <div className="graph-toolbar">
+        <input
+          className="graph-search"
+          type="text"
+          placeholder="搜索节点..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        {searchLower && searchMatchIds.size > 0 && (
+          <div className="graph-search-results">
+            {nodes.filter((n) => searchMatchIds.has(n.id)).slice(0, 8).map((n) => (
+              <button key={n.id} className="graph-search-item" onClick={() => handleSearchSelect(n.id)}>
+                <Pill tone={n.type === 'job' ? 'gray' : n.type === 'skill' ? 'green' : n.type === 'skill_category' ? 'blue' : 'orange'}>{n.type}</Pill>
+                {n.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div ref={containerRef} className="graph-canvas" style={{ cursor: 'grab' }}>
+        <svg
+          className="knowledge-graph"
+          viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+          role="img"
+          aria-label="岗位能力知识图谱"
+        >
+          <defs>
+            <marker id="arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="3">
+              <path d="M0,0 L0,6 L7,3 z" fill="#a7b4ca" />
+            </marker>
+          </defs>
+          {edges.map((edge) => {
+            const s = positions[edge.source];
+            const t = positions[edge.target];
+            if (!s || !t) return null;
+            const key = `${edge.source}->${edge.target}`;
+            const isRelated = relatedEdgeKeys.has(key);
+            const mx = (s.x + t.x) / 2;
+            const cp = mx + (t.x > s.x ? 40 : -40);
+            return (
+              <g key={key} className={`graph-edge ${edge.relation} ${isRelated ? 'active' : ''}`}>
+                <path
+                  d={`M${s.x},${s.y} Q${cp},${(s.y + t.y) / 2} ${t.x},${t.y}`}
+                  fill="none"
+                  markerEnd="url(#arrow)"
+                />
+                <text x={cp} y={(s.y + t.y) / 2 - 8} textAnchor="middle">{edge.relation}</text>
+              </g>
+            );
+          })}
+          {nodes.map((node) => {
+            const pos = positions[node.id];
+            if (!pos) return null;
+            const isSelected = selectedNodeId === node.id;
+            const isRelated = relatedEdgeKeys.size > 0 && edges.some((e) => (e.source === selectedNodeId && e.target === node.id) || (e.target === selectedNodeId && e.source === node.id));
+            const isSearchMatch = searchMatchIds.has(node.id);
+            return (
+              <g
+                key={node.id}
+                className={`kg-node ${node.type} ${isSelected ? 'selected' : ''} ${isRelated ? 'related' : ''}`}
+                onClick={() => onSelectNode(node.id)}
+                style={{ cursor: 'pointer' }}
+              >
+                <circle
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={node.type === 'job' ? 30 : 22}
+                  stroke={isSearchMatch ? '#ef4444' : undefined}
+                  strokeWidth={isSearchMatch ? 4 : undefined}
+                />
+                <text x={pos.x} y={pos.y + 4}>{node.label.length > 9 ? `${node.label.slice(0, 8)}…` : node.label}</text>
+                <title>{node.label}</title>
+              </g>
+            );
+          })}
+        </svg>
+        <div className="graph-legend">
+          <span><i className="legend-job" />岗位</span>
+          <span><i className="legend-skill" />技能点</span>
+          <span><i className="legend-category" />技能类别</span>
+          <span><i className="legend-scenario" />行业场景</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [dashboard, setDashboard] = React.useState<Dashboard | null>(null);
   const [graph, setGraph] = React.useState<GraphData | null>(null);
@@ -154,22 +478,48 @@ function App() {
   const [resumeText, setResumeText] = React.useState('');
   const [matchResult, setMatchResult] = React.useState<MatchResult | null>(null);
   const [parsedResume, setParsedResume] = React.useState<ParsedResume | null>(null);
+  const [evaluation, setEvaluation] = React.useState<EvaluationData | null>(null);
+  const [clustering, setClustering] = React.useState<ClusteringData | null>(null);
+  const [graphView, setGraphView] = React.useState<'topology' | 'cluster'>('topology');
   const [activeModule, setActiveModule] = React.useState<ModuleKey>('overview');
   const [graphFilter, setGraphFilter] = React.useState('all');
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState('');
+  const [pathSource, setPathSource] = React.useState('');
+  const [pathTarget, setPathTarget] = React.useState('');
+  const [pathResult, setPathResult] = React.useState<{ path: Array<{ id: string; label: string; type: string }>; edges: Array<{ source: string; target: string; relation: string }>; length?: number; error?: string } | null>(null);
+  const [uploadedFileName, setUploadedFileName] = React.useState('');
+
+  async function handleFileUpload(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch(`${API_BASE}/api/upload/resume`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.error) {
+        alert(data.error);
+      } else {
+        setUploadedFileName(file.name);
+        setResumeText(data.raw_text_length > 0 ? `（已上传 ${file.name}，解析到 ${data.skills.length} 项技能）\n\n` + (data.projects?.join('\n') ?? '') : '');
+        setParsedResume(data);
+      }
+    } catch {
+      alert('上传失败，请检查后端服务');
+    }
+  }
 
   async function loadData() {
     setLoading(true);
     setError('');
     try {
-      await fetch(`${API_BASE}/api/init`, { method: 'POST' });
-      const [dashboardRes, graphRes, discoverRes, resumesRes] = await Promise.all([
+      const [dashboardRes, graphRes, discoverRes, resumesRes, evalRes, clusterRes] = await Promise.all([
         fetch(`${API_BASE}/api/dashboard`),
         fetch(`${API_BASE}/api/graph`),
         fetch(`${API_BASE}/api/discover`),
-        fetch(`${API_BASE}/api/resumes`)
+        fetch(`${API_BASE}/api/resumes`),
+        fetch(`${API_BASE}/api/evaluation`),
+        fetch(`${API_BASE}/api/clustering`)
       ]);
       const dashboardData: Dashboard = await dashboardRes.json();
       const graphData: GraphData = await graphRes.json();
@@ -185,6 +535,12 @@ function App() {
       setResumes(resumeData);
       setResumeText(resumeData[0]?.text ?? '');
       setUpdates(Object.fromEntries(updatePairs));
+      try {
+        if (evalRes.ok) setEvaluation(await evalRes.json());
+      } catch { /* evaluation API not available */ }
+      try {
+        if (clusterRes.ok) setClustering(await clusterRes.json());
+      } catch { /* clustering API not available */ }
     } catch {
       setError('无法连接后端服务，请先启动 FastAPI：uvicorn app.main:app --reload');
     } finally {
@@ -212,6 +568,12 @@ function App() {
     setParsedResume(result.parsed_resume);
   }
 
+  async function runPathQuery() {
+    if (!pathSource || !pathTarget) return;
+    const res = await fetch(`${API_BASE}/api/graph/path?source=${encodeURIComponent(pathSource)}&target=${encodeURIComponent(pathTarget)}`);
+    setPathResult(await res.json());
+  }
+
   React.useEffect(() => {
     loadData();
   }, []);
@@ -228,54 +590,10 @@ function App() {
     }
   }, [selectedJob, selectedResume?.id]);
 
-  const filteredNodes = React.useMemo(() => {
-    const nodes = graph?.nodes ?? [];
-    return graphFilter === 'all' ? nodes : nodes.filter((node) => node.type === graphFilter);
-  }, [graph?.nodes, graphFilter]);
+  const { nodes: layoutNodes, edges: layoutEdges, positions } = useGraphLayout(graph, graphFilter);
 
-  const visibleGraph = React.useMemo(() => {
-    if (!graph) {
-      return { nodes: [] as GraphNode[], edges: [] as GraphEdge[], positions: {} as Record<string, { x: number; y: number }> };
-    }
-
-    const seedIds = new Set(filteredNodes.map((node) => node.id));
-    const visibleIds = new Set(seedIds);
-    graph.edges.forEach((edge) => {
-      if (graphFilter === 'all' || seedIds.has(edge.source) || seedIds.has(edge.target)) {
-        visibleIds.add(edge.source);
-        visibleIds.add(edge.target);
-      }
-    });
-
-    const nodes = graph.nodes.filter((node) => visibleIds.has(node.id));
-    const edges = graph.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
-    const columns: Record<string, number> = {
-      job: 120,
-      skill: 430,
-      skill_category: 725,
-      scenario: 850
-    };
-    const grouped = nodes.reduce<Record<string, GraphNode[]>>((acc, node) => {
-      acc[node.type] = [...(acc[node.type] ?? []), node];
-      return acc;
-    }, {});
-    const positions: Record<string, { x: number; y: number }> = {};
-
-    Object.entries(grouped).forEach(([type, group]) => {
-      const x = columns[type] ?? 500;
-      const gap = Math.min(86, Math.max(46, 500 / Math.max(group.length, 1)));
-      const startY = 75 + Math.max(0, (500 - gap * (group.length - 1)) / 2);
-      group.forEach((node, index) => {
-        const offset = type === 'skill' ? (index % 2 === 0 ? -18 : 18) : 0;
-        positions[node.id] = { x: x + offset, y: startY + index * gap };
-      });
-    });
-
-    return { nodes, edges, positions };
-  }, [filteredNodes, graph, graphFilter]);
-
-  const selectedNode = graph?.nodes.find((node) => node.id === selectedNodeId) ?? null;
-  const relatedEdges = graph?.edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId) ?? [];
+  const selectedNode = layoutNodes.find((node) => node.id === selectedNodeId) ?? null;
+  const relatedEdges = layoutEdges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId);
   const nodeTypeCounts = React.useMemo(() => {
     return (graph?.nodes ?? []).reduce<Record<string, number>>((acc, node) => {
       acc[node.type] = (acc[node.type] ?? 0) + 1;
@@ -428,70 +746,76 @@ function App() {
         <div className="grid graph-layout">
           <Card title="图谱探索器" subtitle="按节点类型筛选，并点击节点查看相邻关系" icon={<Network />} accent>
             <div className="filter-bar">
-              {[
-                ['all', '全部', graph?.nodes.length ?? 0],
-                ['job', '岗位', nodeTypeCounts.job ?? 0],
-                ['skill', '技能', nodeTypeCounts.skill ?? 0],
-                ['skill_category', '技能类别', nodeTypeCounts.skill_category ?? 0],
-                ['scenario', '行业场景', nodeTypeCounts.scenario ?? 0]
-              ].map(([key, label, count]) => (
-                <button key={String(key)} className={graphFilter === key ? 'active' : ''} onClick={() => setGraphFilter(String(key))}>
-                  {label}<span>{count}</span>
-                </button>
-              ))}
+              <button className={graphView === 'topology' ? 'active' : ''} onClick={() => setGraphView('topology')}>
+                <Network size={14} /> 拓扑视图
+              </button>
+              <button className={graphView === 'cluster' ? 'active' : ''} onClick={() => setGraphView('cluster')}>
+                <Layers3 size={14} /> 聚类视图
+              </button>
             </div>
-            <div className="graph-canvas">
-              <svg className="knowledge-graph" viewBox="0 0 980 620" role="img" aria-label="岗位能力知识图谱">
-                <defs>
-                  <marker id="arrow" markerHeight="10" markerWidth="10" orient="auto" refX="9" refY="3">
-                    <path d="M0,0 L0,6 L9,3 z" />
-                  </marker>
-                </defs>
-                {visibleGraph.edges.map((edge) => {
-                  const source = visibleGraph.positions[edge.source];
-                  const target = visibleGraph.positions[edge.target];
-                  if (!source || !target) {
-                    return null;
-                  }
-                  const isActive = edge.source === selectedNodeId || edge.target === selectedNodeId;
-                  const midX = (source.x + target.x) / 2;
-                  const midY = (source.y + target.y) / 2;
-                  return (
-                    <g key={`${edge.source}-${edge.target}`} className={`graph-edge ${edge.relation} ${isActive ? 'active' : ''}`}>
-                      <line x1={source.x} y1={source.y} x2={target.x} y2={target.y} markerEnd="url(#arrow)" />
-                      <text x={midX} y={midY - 6}>{edge.relation}</text>
-                    </g>
-                  );
-                })}
-                {visibleGraph.nodes.map((node) => {
-                  const position = visibleGraph.positions[node.id];
-                  if (!position) {
-                    return null;
-                  }
-                  const isSelected = selectedNodeId === node.id;
-                  const related = relatedEdges.some((edge) => edge.source === node.id || edge.target === node.id);
-                  return (
-                    <g
-                      key={node.id}
-                      className={`kg-node ${node.type} ${isSelected ? 'selected' : ''} ${related ? 'related' : ''}`}
-                      onClick={() => setSelectedNodeId(node.id)}
-                      tabIndex={0}
-                      role="button"
-                    >
-                      <circle cx={position.x} cy={position.y} r={node.type === 'job' ? 34 : 26} />
-                      <text x={position.x} y={position.y + 5}>{node.label.length > 12 ? `${node.label.slice(0, 11)}...` : node.label}</text>
-                      <title>{node.label}</title>
-                    </g>
-                  );
-                })}
-              </svg>
-              <div className="graph-legend">
-                <span><i className="legend-job" />岗位</span>
-                <span><i className="legend-skill" />技能点</span>
-                <span><i className="legend-category" />技能类别</span>
-                <span><i className="legend-scenario" />行业场景</span>
+            {graphView === 'topology' ? (
+              <>
+                <div className="filter-bar">
+                  {[
+                    ['all', '全部', graph?.nodes.length ?? 0],
+                    ['job', '岗位', nodeTypeCounts.job ?? 0],
+                    ['skill', '技能', nodeTypeCounts.skill ?? 0],
+                    ['skill_category', '技能类别', nodeTypeCounts.skill_category ?? 0],
+                    ['scenario', '行业场景', nodeTypeCounts.scenario ?? 0]
+                  ].map(([key, label, count]) => (
+                    <button key={String(key)} className={graphFilter === key ? 'active' : ''} onClick={() => setGraphFilter(String(key))}>
+                      {label}<span>{count}</span>
+                    </button>
+                  ))}
+                </div>
+                <GraphCanvas
+                  nodes={layoutNodes}
+                  edges={layoutEdges}
+                  positions={positions}
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={setSelectedNodeId}
+                />
+              </>
+            ) : null}
+            {graphView === 'cluster' && clustering ? (
+              <div className="cluster-view">
+                <svg className="cluster-canvas" viewBox="-6 -6 12 12" role="img" aria-label="岗位聚类散点图">
+                  <line x1="-5" y1="0" x2="5" y2="0" stroke="#e5ebf5" strokeWidth="0.02" />
+                  <line x1="0" y1="-5" x2="0" y2="5" stroke="#e5ebf5" strokeWidth="0.02" />
+                  {clustering.clusters.map((cluster) => {
+                    const colors = ['#2f6df6', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed'];
+                    const color = colors[cluster.id % colors.length];
+                    return cluster.jobs.map((job) => (
+                      <g key={job.id} className="cluster-node" onClick={() => { setSelectedJob(job.id); setGraphView('topology'); }}>
+                        <circle cx={job.coords.x} cy={-job.coords.y} r={0.35} fill={color} opacity={0.85} stroke="white" strokeWidth={0.06} />
+                        <text x={job.coords.x} y={-job.coords.y + 0.55} textAnchor="middle" fontSize="0.3" fill="#162033" fontWeight="700">
+                          {job.title.length > 6 ? job.title.slice(0, 5) + '..' : job.title}
+                        </text>
+                      </g>
+                    ));
+                  })}
+                </svg>
+                <div className="cluster-info">
+                  {clustering.clusters.map((cluster) => {
+                    const colors = ['#2f6df6', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed'];
+                    const color = colors[cluster.id % colors.length];
+                    return (
+                      <div key={cluster.id} className="cluster-card">
+                        <div className="cluster-header">
+                          <i style={{ background: color, width: 12, height: 12, borderRadius: '50%', display: 'inline-block' }} />
+                          <b>类别 {cluster.id + 1}</b>
+                          <span>{cluster.jobs.length} 个岗位</span>
+                        </div>
+                        <div className="skill-row">
+                          {cluster.top_skills.map((s) => <Pill key={s.name} tone="green">{s.name} ({s.count})</Pill>)}
+                        </div>
+                        <div className="muted">{cluster.jobs.map((j) => j.title).join('、')}</div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            ) : null}
           </Card>
 
           <Card title="节点关系详情" subtitle="展示证据化关系，便于评审理解图谱如何生成" icon={<Search />}>
@@ -513,6 +837,44 @@ function App() {
                 }) : <EmptyState text="该筛选下暂无相邻关系" />}
               </div>
             ) : <EmptyState text="请选择一个图谱节点" />}
+            <h4 style={{ marginTop: 20 }}>路径查询</h4>
+            <p className="muted" style={{ marginBottom: 10 }}>选择起止节点，查询图谱中最短路径</p>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <select value={pathSource} onChange={(e) => setPathSource(e.target.value)} style={{ flex: 1 }}>
+                <option value="">起点节点</option>
+                {layoutNodes.map((n) => <option key={n.id} value={n.id}>{n.label}</option>)}
+              </select>
+              <select value={pathTarget} onChange={(e) => setPathTarget(e.target.value)} style={{ flex: 1 }}>
+                <option value="">终点节点</option>
+                {layoutNodes.map((n) => <option key={n.id} value={n.id}>{n.label}</option>)}
+              </select>
+            </div>
+            <button className="secondary" onClick={runPathQuery} style={{ width: '100%' }}>
+              <Route size={14} /> 查询路径
+            </button>
+            {pathResult && (
+              <div style={{ marginTop: 12 }}>
+                {pathResult.error ? (
+                  <EmptyState text={pathResult.error} />
+                ) : (
+                  <>
+                    <p className="muted">路径长度：{pathResult.length} 跳</p>
+                    <div className="timeline" style={{ marginLeft: 0 }}>
+                      {pathResult.path.map((node, i) => (
+                        <div key={node.id} className="timeline-item" style={{ marginLeft: 0 }}>
+                          <div className="timeline-dot" />
+                          <div className="timeline-content">
+                            <Pill tone={node.type === 'job' ? 'gray' : node.type === 'skill' ? 'green' : node.type === 'skill_category' ? 'blue' : 'orange'}>{node.type}</Pill>
+                            <b>{node.label}</b>
+                            {pathResult.edges[i] && <span className="muted"> → {pathResult.edges[i].relation}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </Card>
         </div>
       ) : null}
@@ -545,7 +907,7 @@ function App() {
                       </div>
                     </div>
                     <div className="evidence-list">
-                      {update.sources.map((source) => <span key={`${update.job_id}-${source}`}>{source}</span>)}
+                      {update.sources.map((source, i) => <span key={`${update.job_id}-${source}-${i}`}>{source}</span>)}
                     </div>
                   </div>
                 </article>
@@ -571,6 +933,46 @@ function App() {
             <select value={selectedJob} onChange={(event) => setSelectedJob(event.target.value)}>
               {jobs.map((job) => <option value={job.id} key={job.id}>{job.title}</option>)}
             </select>
+            <label>上传简历文件</label>
+            <div
+              className={`upload-zone ${uploadedFileName ? 'has-file' : ''}`}
+              onClick={() => document.getElementById('resume-file-input')?.click()}
+              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('dragover'); }}
+              onDragLeave={(e) => e.currentTarget.classList.remove('dragover')}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('dragover');
+                const file = e.dataTransfer.files?.[0];
+                if (!file) return;
+                await handleFileUpload(file);
+              }}
+            >
+              <input
+                id="resume-file-input"
+                type="file"
+                accept=".pdf,.txt"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (file) await handleFileUpload(file);
+                }}
+              />
+              {uploadedFileName ? (
+                <>
+                  <CheckCircle2 size={28} className="upload-zone-icon" style={{ color: '#16a34a' }} />
+                  <span className="upload-zone-name">{uploadedFileName}</span>
+                  <span className="upload-zone-text">点击或拖拽重新上传</span>
+                </>
+              ) : (
+                <>
+                  <svg className="upload-zone-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  <span className="upload-zone-text">点击选择或拖拽 PDF / TXT 文件到此处</span>
+                </>
+              )}
+            </div>
             <label>简历文本</label>
             <textarea value={resumeText} onChange={(event) => setResumeText(event.target.value)} />
             <div className="button-row">
@@ -648,6 +1050,104 @@ function App() {
             ) : <EmptyState text="解析简历后展示技能证据" />}
           </Card>
         </div>
+      ) : null}
+
+      {activeModule === 'evaluation' && evaluation ? (
+        <>
+          <section className="metrics">
+            <div className="metric-card">
+              <ClipboardCheck />
+              <strong>{Math.round(evaluation.summary.skill_extraction_f1 * 100)}%</strong>
+              <span>技能抽取 F1</span>
+              <small>Precision {Math.round(evaluation.summary.skill_extraction_precision * 100)}% / Recall {Math.round(evaluation.summary.skill_extraction_recall * 100)}%</small>
+            </div>
+            <div className="metric-card">
+              <Target />
+              <strong>{Math.round(evaluation.summary.matching_accuracy * 100)}%</strong>
+              <span>匹配准确率</span>
+              <small>{evaluation.summary.matching_passed} 通过</small>
+            </div>
+            <div className="metric-card">
+              <Sparkles />
+              <strong>{evaluation.summary.discovery_count}</strong>
+              <span>新岗位发现</span>
+              <small>{evaluation.summary.high_confidence_discoveries} 个高置信度</small>
+            </div>
+            <div className="metric-card">
+              <Database />
+              <strong>{evaluation.skill_extraction.total_cases}</strong>
+              <span>评测用例数</span>
+              <small>技能抽取 + 匹配验证</small>
+            </div>
+          </section>
+
+          <div className="grid two">
+            <Card title="技能抽取评测" subtitle="基于 30 条测试用例，验证 JD 和简历的技能识别准确率" icon={<ClipboardCheck />} accent>
+              <div className="change-grid">
+                <div>
+                  <b>Macro 平均</b>
+                  <Progress value={Math.round(evaluation.skill_extraction.macro_avg.precision * 100)} label="Precision" tone="green" />
+                  <Progress value={Math.round(evaluation.skill_extraction.macro_avg.recall * 100)} label="Recall" tone="blue" />
+                  <Progress value={Math.round(evaluation.skill_extraction.macro_avg.f1 * 100)} label="F1" tone="green" />
+                </div>
+                <div>
+                  <b>Micro 平均</b>
+                  <Progress value={Math.round(evaluation.skill_extraction.micro_avg.precision * 100)} label="Precision" tone="green" />
+                  <Progress value={Math.round(evaluation.skill_extraction.micro_avg.recall * 100)} label="Recall" tone="blue" />
+                  <Progress value={Math.round(evaluation.skill_extraction.micro_avg.f1 * 100)} label="F1" tone="green" />
+                </div>
+              </div>
+              <h4>逐条结果</h4>
+              <div className="eval-list">
+                {evaluation.skill_extraction.details.map((d) => (
+                  <div className="eval-row" key={d.case_id}>
+                    <span className={d.f1 >= 0.8 ? 'eval-pass' : 'eval-warn'}>
+                      {d.f1 >= 0.8 ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                    </span>
+                    <b>{d.case_id}</b>
+                    <Pill tone="gray">{d.type}</Pill>
+                    <span>P:{Math.round(d.precision * 100)}%</span>
+                    <span>R:{Math.round(d.recall * 100)}%</span>
+                    <span>F1:{Math.round(d.f1 * 100)}%</span>
+                    {d.extra.length ? <span className="muted">多识别: {d.extra.join(', ')}</span> : null}
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card title="人岗匹配评测" subtitle="验证匹配分数是否达到预期最低阈值" icon={<Target />}>
+              <Progress value={Math.round(evaluation.matching.accuracy * 100)} label="匹配准确率" tone={evaluation.matching.accuracy >= 0.9 ? 'green' : 'orange'} />
+              <h4>逐条结果</h4>
+              <div className="eval-list">
+                {evaluation.matching.details.map((d) => (
+                  <div className="eval-row" key={d.case_id}>
+                    <span className={d.passed ? 'eval-pass' : 'eval-fail'}>
+                      {d.passed ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                    </span>
+                    <b>{d.case_id}</b>
+                    <span>得分: {d.score}</span>
+                    <span>阈值: {d.expected_min_score}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+
+          <Card title="新岗位发现结果" subtitle="基于新兴技术信号的岗位发现清单" icon={<Sparkles />}>
+            <div className="eval-list">
+              {evaluation.discovery.discoveries.map((d) => (
+                <div className="eval-row" key={d.job_id}>
+                  <div className="confidence" style={{ width: 48, height: 48, fontSize: 14 }}>
+                    {Math.round(d.confidence * 100)}%
+                  </div>
+                  <b>{d.title}</b>
+                  <span>{d.signal_count} 个新兴信号</span>
+                  <span>{d.skills_count} 项必备技能</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </>
       ) : null}
     </main>
   );

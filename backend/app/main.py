@@ -1,17 +1,28 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
 from app.schemas import MatchRequest, ResumeParseRequest
+from app.config import LLM_ENABLED, LLM_MODEL
 from app.services.analysis import analyze_job_updates, discover_emerging_jobs, match_resume_to_job
-from app.services.graph import build_capability_graph
-from app.services.parser import parse_resume
+from app.services.clustering import run_clustering
+from app.services.evaluation import run_full_evaluation
+from app.services.graph import build_capability_graph, find_path
+from app.services.parser import parse_resume, parse_pdf_resume
 from app.services.repository import get_job, list_jd_records, list_jobs, list_resumes
 
 
-app = FastAPI(title="岗位能力图谱 MVP", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="岗位能力图谱 MVP", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,14 +33,9 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-
-
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "llm_enabled": LLM_ENABLED, "llm_model": LLM_MODEL if LLM_ENABLED else None}
 
 
 @app.post("/api/init")
@@ -99,3 +105,31 @@ def match(payload: MatchRequest) -> dict:
         return match_resume_to_job(payload.job_id, payload.resume_text)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/evaluation")
+def evaluation() -> dict:
+    return run_full_evaluation()
+
+
+@app.get("/api/clustering")
+def clustering(n_clusters: int = 3) -> dict:
+    return run_clustering(n_clusters)
+
+
+@app.post("/api/upload/resume")
+async def upload_resume(file: UploadFile = File(...)) -> dict:
+    content = await file.read()
+    filename = file.filename or ""
+    if filename.lower().endswith(".pdf"):
+        return parse_pdf_resume(content)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("gbk", errors="ignore")
+    return parse_resume(text)
+
+
+@app.get("/api/graph/path")
+def graph_path(source: str, target: str) -> dict:
+    return find_path(source, target)
